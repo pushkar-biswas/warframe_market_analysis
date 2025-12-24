@@ -1,0 +1,17 @@
+type Order struct {
+	Id         string  `json:"id"`                   // Is the unique identifier of the order.
+	Type       string  `json:"type"`                 // Specifies whether the order is a 'buy' or 'sell'.
+	Platinum   int32   `json:"platinum"`             // Is the total platinum currency involved in the order.
+	Quantity   int32   `json:"quantity"`             // Represents the number of items included in the order.
+	PerTrade   int8    `json:"perTrade,omitempty"`   // (optional) indicates the items quantity per transaction.
+	Rank       *int8   `json:"rank,omitempty"`       // (optional) specifies the rank or level of the item in the order.
+	Charges    *int8   `json:"charges,omitempty"`    // (optional) specifies number of charges left (used in requiem mods).
+	Subtype    string  `json:"subtype,omitempty"`    // (optional) defines the specific subtype or category of the item.
+	AmberStars *int8   `json:"amberStars,omitempty"` // (optional) denotes the count of amber stars in a sculpture order.
+	CyanStars  *int8   `json:"cyanStars,omitempty"`  // (optional) denotes the count of cyan stars in a sculpture order.
+	Visible    bool    `json:"visible"`              // (auth\mod) Indicates whether the order is publicly visible or not.
+	CreatedAt  string  `json:"createdAt"`            // Records the creation time of the order.
+	UpdatedAt  string  `json:"updatedAt"`            // Records the last modification time of the order.
+	ItemId     string  `json:"itemId"`               // Is the unique identifier of the item involved in the order.
+  Group      string  `json:"group"`                // User-defined group to which the order belongs
+}
