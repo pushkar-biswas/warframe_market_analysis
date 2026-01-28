@@ -1,7 +1,10 @@
+import io
+import csv
 import time
 import requests
 import psycopg2
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+
 
 # -------------------------------------------------
 # CONFIG
@@ -43,7 +46,9 @@ def to_int(v):
 def to_timestamp(v):
     if v is None:
         return None
-    return datetime.fromisoformat(v.replace("Z", ""))
+    return datetime.fromisoformat(
+        v.replace("Z", "+00:00")
+    ).astimezone(timezone.utc)
 
 
 # -------------------------------------------------
@@ -60,7 +65,7 @@ def api_call():
 # UPSERT USERS
 # -------------------------------------------------
 def upsert_user(cur, user):
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
 
     cur.execute("""
         SELECT first_seen, active_days, last_active_date
@@ -78,7 +83,7 @@ def upsert_user(cur, user):
                 first_seen, active_days, last_active_date
             )
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT DO NOTHING
         """, (
             user["id"],
             to_int(user.get("reputation")),
@@ -130,10 +135,10 @@ def insert_order(cur, order, uid):
         INSERT INTO orders (
             id, type, platinum, quantity, rank, charges,
             subtype, amberStars, cyanStars,
-            createdAt, itemId, group_name, uid
+            created_at, item_id, group_name, uid
         )
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT DO NOTHING
     """, (
         order.get("id"),
         order.get("type"),
@@ -151,12 +156,22 @@ def insert_order(cur, order, uid):
     ))
 
 
+
+def ensure_partition(cur):
+    cur.execute("SELECT ensure_orders_partition();")
+
+
+
 # -------------------------------------------------
 # MAIN LOOP
 # -------------------------------------------------
 def main():
     conn = get_pg_conn()
     cur = conn.cursor()
+
+    # ensure partitions exist (current + next month)
+    ensure_partition(cur)
+    conn.commit()
 
     while True:
         try:
@@ -173,8 +188,9 @@ def main():
         except Exception as e:
             conn.rollback()
             print("Error:", e)
-    
+
         time.sleep(FETCH_INTERVAL)
+
 
 
 if __name__ == "__main__":
