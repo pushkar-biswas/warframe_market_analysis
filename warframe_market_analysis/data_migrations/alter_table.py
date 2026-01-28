@@ -3,7 +3,7 @@ import sqlite3
 
 # File paths
 db_path = "wf_data.db"
-json_path = "items_data.json"
+json_path = "temp_file/items_data.json"
 
 # Reading json file and connecting to sqlite db
 with open(json_path, "r", encoding="utf-8") as f:
