@@ -1,191 +1,180 @@
 import time
 import requests
-import json
-import sqlite3
-import pandas as pd
-from datetime import datetime
+import psycopg2
+from datetime import datetime, date
 
-DB_NAME = "wf_data.db"
+# -------------------------------------------------
+# CONFIG
+# -------------------------------------------------
+API_URL = "https://api.warframe.market/v2/orders/recent"
+FETCH_INTERVAL = 60
 
-expected_key_values = [
-    "id",
-    "type",
-    "platinum",
-    "quantity",
-    "rank",
-    "charges",
-    "subtype",
-    "amberStars",
-    "cyanStars",
-    "createdAt",
-    "itemId",
-    "group",
+POSTGRES_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "wf_data",
+    "user": "postgres",
+    "password": "admin1234"
+}
+
+EXPECTED_ORDER_KEYS = [
+    "id", "type", "platinum", "quantity", "rank", "charges",
+    "subtype", "amberStars", "cyanStars", "createdAt",
+    "itemId", "group"
 ]
 
-# DB connection
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    return conn
+# -------------------------------------------------
+# DB
+# -------------------------------------------------
+def get_pg_conn():
+    return psycopg2.connect(**POSTGRES_CONFIG)
 
 
+# -------------------------------------------------
+# HELPERS
+# -------------------------------------------------
+def to_int(v):
+    try:
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def to_timestamp(v):
+    if v is None:
+        return None
+    return datetime.fromisoformat(v.replace("Z", ""))
+
+
+# -------------------------------------------------
+# API
+# -------------------------------------------------
 def api_call():
-    url = "https://api.warframe.market/v2/orders/recent"
     headers = {"Language": "en"}
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-    return response.json()
+    resp = requests.get(API_URL, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp.json()["data"]
 
 
-def extract_order_fields(order):
-    data = {}
-    for key in expected_key_values:
-        data[key] = order.get(key)
-    return data
+# -------------------------------------------------
+# UPSERT USERS
+# -------------------------------------------------
+def upsert_user(cur, user):
+    today = date.today()
 
+    cur.execute("""
+        SELECT first_seen, active_days, last_active_date
+        FROM users_info
+        WHERE id = %s
+    """, (user["id"],))
 
-def process_raw_data(raw_data):
-    orders = []
-    users = {}
+    row = cur.fetchone()
 
-    for order in raw_data["data"]:
-        user = order["user"]
-
-        users[user["id"]] = (
+    if row is None:
+        cur.execute("""
+            INSERT INTO users_info (
+                id, reputation, platform, crossplay,
+                locale, status, lastSeen,
+                first_seen, active_days, last_active_date
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (id) DO NOTHING
+        """, (
             user["id"],
-            user.get("reputation"),
+            to_int(user.get("reputation")),
             user.get("platform"),
-            user.get("crossplay"),
+            bool(user.get("crossplay")) if user.get("crossplay") is not None else None,
             user.get("locale"),
             user.get("status"),
-            user.get("lastSeen"),
-        )
+            to_timestamp(user.get("lastSeen")),
+            to_timestamp(user.get("lastSeen")),
+            1,
+            today
+        ))
+    else:
+        first_seen, active_days, last_active_date = row
 
-        order_data = extract_order_fields(order)
-        order_data["uid"] = user["id"]
+        if last_active_date != today:
+            active_days += 1
+            last_active_date = today
 
-        orders.append((
-            order_data.get("id"),
-            order_data.get("type"),
-            order_data.get("platinum"),
-            order_data.get("quantity"),
-            order_data.get("rank"),
-            order_data.get("charges"),
-            order_data.get("subtype"),
-            order_data.get("amberStars"),
-            order_data.get("cyanStars"),
-            order_data.get("createdAt"),
-            order_data.get("itemId"),
-            order_data.get("group"),
-            order_data.get("uid"),
+        cur.execute("""
+            UPDATE users_info
+            SET reputation=%s,
+                platform=%s,
+                crossplay=%s,
+                locale=%s,
+                status=%s,
+                lastSeen=%s,
+                active_days=%s,
+                last_active_date=%s
+            WHERE id=%s
+        """, (
+            to_int(user.get("reputation")),
+            user.get("platform"),
+            bool(user.get("crossplay")) if user.get("crossplay") is not None else None,
+            user.get("locale"),
+            user.get("status"),
+            to_timestamp(user.get("lastSeen")),
+            active_days,
+            last_active_date,
+            user["id"]
         ))
 
-    return users, orders
+
+# -------------------------------------------------
+# INSERT ORDERS
+# -------------------------------------------------
+def insert_order(cur, order, uid):
+    cur.execute("""
+        INSERT INTO orders (
+            id, type, platinum, quantity, rank, charges,
+            subtype, amberStars, cyanStars,
+            createdAt, itemId, group_name, uid
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (id) DO NOTHING
+    """, (
+        order.get("id"),
+        order.get("type"),
+        to_int(order.get("platinum")),
+        to_int(order.get("quantity")),
+        to_int(order.get("rank")),
+        to_int(order.get("charges")),
+        order.get("subtype"),
+        to_int(order.get("amberStars")),
+        to_int(order.get("cyanStars")),
+        to_timestamp(order.get("createdAt")),
+        order.get("itemId"),
+        order.get("group"),
+        uid
+    ))
 
 
-def insert_data(conn, users, orders):
-    cursor = conn.cursor()
-
-    today = datetime.utcnow().date().isoformat()
-
-    for user in users.values():
-        (
-            user_id,
-            reputation,
-            platform,
-            crossplay,
-            locale,
-            status,
-            lastSeen
-        ) = user
-
-        cursor.execute("""
-            SELECT first_seen, active_day, last_active_date
-            FROM users_info
-            WHERE id = ?
-        """, (user_id,))
-
-        row = cursor.fetchone()
-
-        if row is None:
-            # First time user seen
-            cursor.execute("""
-                INSERT INTO users_info (
-                    id, reputation, platform, crossplay,
-                    locale, status, lastSeen,
-                    first_seen, active_day, last_active_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                user_id,
-                reputation,
-                platform,
-                crossplay,
-                locale,
-                status,
-                lastSeen,
-                lastSeen,      # first_seen
-                1,             # active_day
-                today          # last_active_date
-            ))
-        else:
-            first_seen, active_day, last_active_date = row
-
-            # Update activity only once per day
-            if last_active_date != today:
-                active_day += 1
-                last_active_date = today
-
-            cursor.execute("""
-                UPDATE users_info
-                SET
-                    reputation = ?,
-                    platform = ?,
-                    crossplay = ?,
-                    locale = ?,
-                    status = ?,
-                    lastSeen = ?,
-                    active_day = ?,
-                    last_active_date = ?
-                WHERE id = ?
-            """, (
-                reputation,
-                platform,
-                crossplay,
-                locale,
-                status,
-                lastSeen,
-                active_day,
-                last_active_date,
-                user_id
-            ))
-
-    # Orders remain unchanged
-    cursor.executemany("""
-        INSERT OR IGNORE INTO orders (
-            id, type, platinum, quantity, rank, charges, subtype,
-            amberStars, cyanStars, createdAt, itemId, group_name, uid
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, orders)
-
-    conn.commit()
-
-
-
+# -------------------------------------------------
+# MAIN LOOP
+# -------------------------------------------------
 def main():
-    conn = get_db_connection()
+    conn = get_pg_conn()
+    cur = conn.cursor()
 
     while True:
         try:
-            raw_data = api_call()
-            users, orders = process_raw_data(raw_data)
-            insert_data(conn, users, orders)
-            print(f"Inserted {len(orders)} orders, {len(users)} users")
+            data = api_call()
+
+            for entry in data:
+                user = entry["user"]
+                upsert_user(cur, user)
+                insert_order(cur, entry, user["id"])
+
+            conn.commit()
+            print(f"Inserted {len(data)} orders")
 
         except Exception as e:
+            conn.rollback()
             print("Error:", e)
-
-        time.sleep(60)
+    
+        time.sleep(FETCH_INTERVAL)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ def create_database():
             status TEXT,
             lastSeen TEXT,
             first_seen TEXT,
-            active_day INTEGER,
+            active_days INTEGER,
             last_active_date TEXT
         );
 
